@@ -1,0 +1,148 @@
+---
+title: "The relationship between street trees and incomes in New York City"
+author: "Josephine Cardelle"
+date: last-modified
+execute: 
+  warning: false
+  message: false
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+
+More content available at the [github repository](https://github.com/jocardelle/nyc-trees)
+
+## About
+
+Does money grow (on) trees? Trees and other plants are known to have a natural cooling effect ([Shashua-Bar & Hoffman, 2000](https://www.sciencedirect.com/science/article/pii/S0378778899000183)). For this reason, trees are often used in urban areas to reduce temperatures and the effects of climate change.
+
+## Load packages
+
+```{r}
+# Load necessary libraries
+library(tidycensus)
+library(tidyverse)
+library(here)
+library(stars)
+library(tidyr)
+library(dplyr)
+library(units)
+library(mapview)
+```
+
+## Hypothesis graph
+
+```{r}
+# Hypothesis graph
+df <- data.frame(x = c(1:100))
+df$y <- 1/3 * df$x
+
+ggplot (df, aes(x, y)) +
+  geom_line() +
+  xlim(0, 50) +
+  ylim(0, 50) +
+  labs(title = "Trees and Income in NYC Hypothesis",
+       x = "median income($)",
+       y = expression(paste("tree per ", km^2))) +
+  theme_minimal() +
+  theme(axis.text.x=element_blank(),
+        axis.text.y = element_blank())
+```
+
+## Read in data for New York City census tracts
+
+```{r}
+nyc <- get_acs(
+  state = "NY",
+  county = c("Bronx", "Kings", "New York", "Richmond", "Queens"),
+  geography = "tract",
+  variables = "B19013_001",
+  geometry = TRUE,
+  year = 2015
+)
+
+
+# Read in tree data
+nyc_trees <- read_csv(here('data/2015StreetTreesCensus_TREES.csv'))
+
+# Check the different status' of the trees
+unique(nyc_trees$status)
+
+#  Filter to trees that are alive
+nyc_trees_alive <- nyc_trees %>% 
+  filter(status == "Alive")
+```
+
+```{r}
+# Add new column to nyc that calculate the area for each census tract
+nyc <- nyc %>%
+  mutate(area_km2 = as.numeric(st_area(geometry)/1e6))
+
+nyc$income <- (nyc$estimate/10000)
+
+# Map income by census tract
+mapview(nyc,
+        zcol = "income",
+        layer.name = "Median income ($10,000)")
+
+```
+
+```{r}
+# Make trees data set into sf object and set crs to match
+nyc_trees_sf <- st_as_sf(nyc_trees_alive, coords = c("longitude", "Latitude"), crs = st_crs(nyc))
+
+# Join trees and income by st_within and count trees in each census tract
+nyc_trees_income <- nyc_trees_sf %>% 
+  st_join(nyc, join = st_within) %>% 
+  group_by(GEOID) %>% 
+  summarize(tree_count = n())
+
+# Add tree count data back to income data
+treecount_income <- st_join(nyc, nyc_trees_income) %>% 
+  select(-c('GEOID.x', 'GEOID.y'))
+
+# Add tree per km2 column
+treecount_income <- treecount_income %>% 
+  mutate(tree_per_km2 = (tree_count/area_km2))
+
+# Map trees per km2
+mapview(treecount_income,
+        zcol = "tree_per_km2",
+        layer.name = "trees per square kilometer")
+```
+
+```{r}
+ggplot(treecount_income, aes(x = income, y = tree_per_km2)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  labs(title = "Trees and Income in NYC",
+       x = "median income($10,000)",
+       y = expression(paste("tree per ", km^2))) +
+  theme_minimal()
+
+summary(lm(tree_per_km2 ~ income, treecount_income))
+
+lm_trees <- lm(tree_per_km2 ~ income, treecount_income)
+```
+
+# Residuals
+
+```{r}
+# Add residuals back to data by first adding NA in column
+treecount_income$residual<- NA
+treecount_income$residual[!is.na(treecount_income$tree_per_km2) & !is.na(treecount_income$estimate)] <- residuals(lm_trees)
+
+mapview(treecount_income,
+        zcol = "residual",
+        layer.name = "residuals")
+```
+
+Citations
+
+1.  Shashua-Bar, L., & Hoffman, M. E. (2000). Vegetation as a climatic component in the design of an urban street: An empirical model for predicting the cooling effect of urban green areas with trees. Energy and Buildings, 31(3), 221–235. https://doi.org/10.1016/S0378-7788(99)00018-3
+
+2.  https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0249715#sec023
